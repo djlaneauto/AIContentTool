@@ -94,21 +94,27 @@ namespace AIContentTool
             try
             {
                 var assembly = Assembly.GetExecutingAssembly();
-                string resourceName = "AIContentTool.Resources.Template_Test.potx"; // Confirm this matches your embedded file name/path
+                string resourceName = "AIContentTool.Resources.Template_Test.potx"; // Double-check this matches exactly
+                ErrorHandler.LogInfo($"Attempting to extract resource: {resourceName}");
                 using (Stream stream = assembly.GetManifestResourceStream(resourceName))
                 {
-                    if (stream == null) return null;
+                    if (stream == null)
+                    {
+                        ErrorHandler.LogError("Embedded template resource not found");
+                        return null;
+                    }
                     string tempPath = Path.Combine(Path.GetTempPath(), "Template_Test.potx");
                     using (FileStream fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
                     {
                         stream.CopyTo(fileStream);
                     }
+                    ErrorHandler.LogInfo($"Extracted template to {tempPath}");
                     return tempPath;
                 }
             }
             catch (Exception ex)
             {
-                ErrorHandler.LogError($"Failed to extract embedded template: {ex.Message}");
+                ErrorHandler.LogError("Failed to extract embedded template", ex);
                 return null;
             }
         }
@@ -225,19 +231,29 @@ namespace AIContentTool
                 }
             }
         }
-        
+
         /// <summary>
         /// Generates slides from XML content.
         /// </summary>
         private static void GenerateFromXml(PowerPoint.Presentation presentation, string xmlContent)
         {
-            var xmlDoc = XDocument.Parse(xmlContent);
-            var slides = xmlDoc.Descendants("slide");
-            foreach (var slideElement in slides)
+            try
             {
-                string title = slideElement.Element("title")?.Value ?? "Untitled";
-                var elements = slideElement.Elements().Where(e => e.Name != "title");
-                AddSlideWithElements(presentation, title, elements, slideElement); // Pass slideElement
+                ErrorHandler.LogInfo("Attempting to parse XML: " + xmlContent.Substring(0, Math.Min(200, xmlContent.Length)) + "..."); // Log snippet
+                var xmlDoc = XDocument.Parse(xmlContent);
+                var slides = xmlDoc.Descendants("slide");
+                foreach (var slideElement in slides)
+                {
+                    string title = slideElement.Element("title")?.Value ?? "Untitled";
+                    var elements = slideElement.Elements().Where(e => e.Name != "title");
+                    AddSlideWithElements(presentation, title, elements, slideElement);
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("XML parsing failed", ex);
+                ErrorHandler.LogInfo("Failed XML content: " + xmlContent); // Log full for review
+                throw;
             }
         }
 
@@ -581,7 +597,7 @@ namespace AIContentTool
                         string color = seriesElem.Attribute("color")?.Value ?? "";
                         if (!string.IsNullOrEmpty(color))
                         {
-                            var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex);
+                            var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex); // Use method call with parentheses
                             series.Format.Fill.ForeColor.RGB = ParseColorToOle(color);
                         }
                         seriesIndex++;

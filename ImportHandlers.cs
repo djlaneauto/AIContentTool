@@ -1,10 +1,12 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Xml.Linq;
 
 namespace AIContentTool
 {
@@ -52,9 +54,39 @@ namespace AIContentTool
         {
             if (Clipboard.ContainsText())
             {
-                ImportedContent = Clipboard.GetText();
-                ContentFormat = "MARKDOWN"; // Default to Markdown for clipboard
-                DetectPlaceholders(); // Detect placeholders immediately after import
+                string clipboardText = Clipboard.GetText().Trim(); // Trim to remove leading/trailing whitespace
+                if (string.IsNullOrEmpty(clipboardText))
+                {
+                    MessageBox.Show("Clipboard does not contain text.");
+                    return;
+                }
+
+                // Try to detect and parse as XML
+                try
+                {
+                    XDocument.Parse(clipboardText);
+                    ImportedContent = clipboardText;
+                    ContentFormat = "XML";
+                    DetectPlaceholders();
+                    return;
+                }
+                catch (Exception) { /* Not XML, continue */ }
+
+                // Try to detect and parse as JSON
+                try
+                {
+                    JsonConvert.DeserializeObject(clipboardText);
+                    ImportedContent = clipboardText;
+                    ContentFormat = "JSON";
+                    DetectPlaceholders();
+                    return;
+                }
+                catch (Exception) { /* Not JSON, fallback to Markdown */ }
+
+                // Fallback to Markdown
+                ImportedContent = clipboardText;
+                ContentFormat = "MARKDOWN";
+                DetectPlaceholders();
             }
             else
             {
