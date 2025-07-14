@@ -62,15 +62,26 @@ namespace AIContentTool
             }
         }
 
-        public static void SelectTemplate()
-        {
-            OpenFileDialog dialog = new OpenFileDialog { Filter = "PowerPoint Files (*.pptx)|*.pptx" };
-            if (dialog.ShowDialog() == DialogResult.OK)
-            {
-                TemplateFilePath = dialog.FileName;
-                MessageBox.Show($"Template selected: {Path.GetFileName(TemplateFilePath)}");
-            }
-        }
+        // Optional: Uncomment if you want to allow template selection via a dialog
+        //public static bool PromptForTemplate()
+        //{
+        //    var dialog = new TemplateSelectionDialog();
+        //    if (dialog.ShowDialog() == DialogResult.OK)
+        //    {
+        //        return true; // Template set in dialog
+        //    }
+        //    return false; // Cancelled
+        //}
+
+        //public static void SelectTemplate()
+        //{
+        //    OpenFileDialog dialog = new OpenFileDialog { Filter = "PowerPoint Files (*.pptx)|*.pptx" };
+        //    if (dialog.ShowDialog() == DialogResult.OK)
+        //    {
+        //        TemplateFilePath = dialog.FileName;
+        //        MessageBox.Show($"Template selected: {Path.GetFileName(TemplateFilePath)}");
+        //    }
+        //}
 
         // Optional: Keep ProcessImport for backward compatibility or other uses, but redefine it
         public static void ProcessImport()

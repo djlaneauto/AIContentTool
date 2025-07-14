@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -16,6 +17,13 @@ namespace AIContentTool
 {
     public static class SlideGenerator
     {
+        private struct FooterInfo
+        {
+            public string Text { get; set; }
+            public float Size { get; set; }
+            public int ColorRGB { get; set; }
+        }
+
         /// <summary>
         /// Generates slides in the specified PowerPoint presentation based on the content and format.
         /// </summary>
@@ -29,17 +37,29 @@ namespace AIContentTool
             {
                 DateTime startTime = DateTime.Now;
 
-                // Apply the selected template if specified
-                if (!string.IsNullOrEmpty(ImportHandlers.TemplateFilePath))
+                // Prompt for template choice
+                using (var dialog = new TemplateChoiceDialog())
                 {
-                    try
+                    if (dialog.ShowDialog() == DialogResult.OK && dialog.UseCorporate)
                     {
-                        presentation.ApplyTemplate(ImportHandlers.TemplateFilePath);
-                    }
-                    catch (Exception ex)
-                    {
-                        ErrorHandler.LogError($"Failed to apply template: {ex.Message}");
-                        MessageBox.Show("Error applying template. Check the log for details.");
+                        string tempTemplatePath = ExtractEmbeddedTemplate();
+                        if (!string.IsNullOrEmpty(tempTemplatePath))
+                        {
+                            try
+                            {
+                                presentation.ApplyTemplate(tempTemplatePath);
+                                ApplyTemplateFooters(presentation, Globals.ThisAddIn.Application, tempTemplatePath);
+                            }
+                            catch (Exception ex)
+                            {
+                                ErrorHandler.LogError($"Failed to apply embedded template: {ex.Message}");
+                                MessageBox.Show("Error applying template. Check the log for details.");
+                            }
+                            finally
+                            {
+                                try { File.Delete(tempTemplatePath); } catch { } // Cleanup, ignore errors if locked
+                            }
+                        }
                     }
                 }
 
@@ -64,11 +84,148 @@ namespace AIContentTool
             }
             catch (Exception ex)
             {
-                ErrorHandler.LogError($"Slide generation failed: {ex.Message}");
+                ErrorHandler.LogError($"Slide generation failed", ex); // Pass ex
                 throw;
             }
         }
 
+        private static string ExtractEmbeddedTemplate()
+        {
+            try
+            {
+                var assembly = Assembly.GetExecutingAssembly();
+                string resourceName = "AIContentTool.Resources.Template_Test.potx"; // Confirm this matches your embedded file name/path
+                using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null) return null;
+                    string tempPath = Path.Combine(Path.GetTempPath(), "Template_Test.potx");
+                    using (FileStream fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+                    {
+                        stream.CopyTo(fileStream);
+                    }
+                    return tempPath;
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError($"Failed to extract embedded template: {ex.Message}");
+                return null;
+            }
+        }
+
+        private class TemplateChoiceDialog : Form
+        {
+            public bool UseCorporate { get; private set; }
+
+            public TemplateChoiceDialog()
+            {
+                this.Text = "Template Selection";
+                this.Size = new System.Drawing.Size(300, 150);
+                this.FormBorderStyle = FormBorderStyle.FixedDialog;
+                this.StartPosition = FormStartPosition.CenterParent;
+
+                Label label = new Label { Text = "Choose template:", Left = 20, Top = 20, Width = 260 };
+                this.Controls.Add(label);
+
+                Button btnCorporate = new Button { Text = "Use Corporate Template (recommended)", Left = 20, Top = 50, Width = 260 };
+                btnCorporate.Click += (sender, e) => { UseCorporate = true; DialogResult = DialogResult.OK; Close(); };
+                this.Controls.Add(btnCorporate);
+
+                Button btnExisting = new Button { Text = "Use Existing Template", Left = 20, Top = 80, Width = 260 };
+                btnExisting.Click += (sender, e) => { UseCorporate = false; DialogResult = DialogResult.OK; Close(); };
+                this.Controls.Add(btnExisting);
+            }
+        }
+
+        private static FooterInfo GetTemplateFooterInfo(string templatePath, PowerPoint.Application app)
+        {
+            try
+            {
+                var tempPres = app.Presentations.Open(templatePath, Office.MsoTriState.msoFalse, Office.MsoTriState.msoFalse, Office.MsoTriState.msoFalse);
+                var master = tempPres.SlideMaster;
+                FooterInfo info = new FooterInfo { Text = "", Size = 12, ColorRGB = 0 };
+
+                foreach (PowerPoint.Shape shape in master.Shapes)
+                {
+                    if (shape.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderFooter)
+                    {
+                        var textRange = shape.TextFrame.TextRange;
+                        info.Text = textRange.Text ?? "";
+                        info.Size = textRange.Font.Size;
+                        info.ColorRGB = textRange.Font.Color.RGB;
+                        break;
+                    }
+                }
+                tempPres.Close();
+                return info;
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError($"Failed to extract footer info from template: {ex.Message}");
+                return new FooterInfo { Text = "", Size = 12, ColorRGB = 0 };
+            }
+        }
+
+        private static void ApplyTemplateFooters(PowerPoint.Presentation presentation, PowerPoint.Application app, string templatePath)
+        {
+            FooterInfo info = GetTemplateFooterInfo(templatePath, app);
+
+            var master = presentation.SlideMaster;
+            var headersFooters = master.HeadersFooters;
+            headersFooters.Footer.Visible = Office.MsoTriState.msoTrue;
+            headersFooters.DateAndTime.Visible = Office.MsoTriState.msoTrue;
+            headersFooters.SlideNumber.Visible = Office.MsoTriState.msoTrue;
+
+            // Apply to footer shape
+            foreach (PowerPoint.Shape shape in master.Shapes)
+            {
+                if (shape.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderFooter)
+                {
+                    var textRange = shape.TextFrame.TextRange;
+                    textRange.Text = info.Text;
+                    textRange.Font.Size = info.Size;
+                    textRange.Font.Color.RGB = info.ColorRGB;
+                    break;
+                }
+            }
+
+            // Apply to all layouts and additional masters
+            foreach (PowerPoint.CustomLayout layout in master.CustomLayouts)
+            {
+                layout.HeadersFooters.Footer.Visible = Office.MsoTriState.msoTrue;
+                foreach (PowerPoint.Shape layoutShape in layout.Shapes)
+                {
+                    if (layoutShape.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderFooter)
+                    {
+                        var layoutTextRange = layoutShape.TextFrame.TextRange;
+                        layoutTextRange.Text = info.Text;
+                        layoutTextRange.Font.Size = info.Size;
+                        layoutTextRange.Font.Color.RGB = info.ColorRGB;
+                        break;
+                    }
+                }
+            }
+
+            if (presentation.Designs.Count > 1)
+            {
+                foreach (PowerPoint.Design design in presentation.Designs)
+                {
+                    design.SlideMaster.HeadersFooters.Footer.Visible = Office.MsoTriState.msoTrue;
+                    foreach (PowerPoint.Shape designShape in design.SlideMaster.Shapes)
+                    {
+                        if (designShape.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderFooter)
+                        {
+                            var designTextRange = designShape.TextFrame.TextRange;
+                            designTextRange.Text = info.Text;
+                            designTextRange.Font.Size = info.Size;
+                            designTextRange.Font.Color.RGB = info.ColorRGB;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
         /// <summary>
         /// Generates slides from XML content.
         /// </summary>
@@ -80,7 +237,7 @@ namespace AIContentTool
             {
                 string title = slideElement.Element("title")?.Value ?? "Untitled";
                 var elements = slideElement.Elements().Where(e => e.Name != "title");
-                AddSlideWithElements(presentation, title, elements);
+                AddSlideWithElements(presentation, title, elements, slideElement); // Pass slideElement
             }
         }
 
@@ -163,19 +320,118 @@ namespace AIContentTool
         /// <summary>
         /// Adds a slide with the specified title and elements (textboxes, lists, tables, charts, images).
         /// </summary>
-        private static void AddSlideWithElements(PowerPoint.Presentation presentation, string title, IEnumerable<XElement> elements)
+        private static void AddSlideWithElements(PowerPoint.Presentation presentation, string title, IEnumerable<XElement> elements, XElement slideElement = null)
         {
-            var slide = presentation.Slides.Add(presentation.Slides.Count + 1, PowerPoint.PpSlideLayout.ppLayoutBlank);
+            // Lookup custom layout if specified
+            PowerPoint.CustomLayout customLayout = null;
+            string layoutName = slideElement?.Attribute("layout")?.Value;
+            if (!string.IsNullOrEmpty(layoutName))
+            {
+                foreach (PowerPoint.CustomLayout layout in presentation.SlideMaster.CustomLayouts)
+                {
+                    if (layout.Name == layoutName)
+                    {
+                        customLayout = layout;
+                        break;
+                    }
+                }
+            }
+            if (customLayout == null)
+            {
+                customLayout = presentation.SlideMaster.CustomLayouts.Cast<PowerPoint.CustomLayout>().FirstOrDefault(l => l.Name == "Blank");
+            }
+
+            var slide = presentation.Slides.AddSlide(presentation.Slides.Count + 1, customLayout ?? presentation.SlideMaster.CustomLayouts[1]);
+            if (customLayout == null)
+            {
+                slide.Layout = PowerPoint.PpSlideLayout.ppLayoutBlank; // Force blank
+            }
+
+            // Populate title placeholder
             if (!string.IsNullOrEmpty(title))
             {
-                var titleShape = slide.Shapes.AddTextbox(Office.MsoTextOrientation.msoTextOrientationHorizontal, 50, 20, 600, 50);
-                titleShape.TextFrame.TextRange.Text = title;
-                titleShape.TextFrame.TextRange.Font.Size = 32;
-                titleShape.TextFrame.TextRange.Font.Bold = Office.MsoTriState.msoTrue;
+                var titlePlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderTitle || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderCenterTitle);
+                if (titlePlaceholder != null)
+                {
+                    titlePlaceholder.TextFrame.TextRange.Text = title;
+                    titlePlaceholder.TextFrame.TextRange.Font.Size = 32;
+                    titlePlaceholder.TextFrame.TextRange.Font.Bold = Office.MsoTriState.msoTrue;
+                }
+                else
+                {
+                    var titleShape = slide.Shapes.AddTextbox(Office.MsoTextOrientation.msoTextOrientationHorizontal, 50, 20, 600, 50);
+                    titleShape.TextFrame.TextRange.Text = title;
+                    titleShape.TextFrame.TextRange.Font.Size = 32;
+                    titleShape.TextFrame.TextRange.Font.Bold = Office.MsoTriState.msoTrue;
+                }
             }
+
+            // Elements mapping with enhanced fallback and logging
+            var placeholderTypeMap = new Dictionary<string, PowerPoint.PpPlaceholderType>
+    {
+        { "body", PowerPoint.PpPlaceholderType.ppPlaceholderBody },
+        { "subtitle", PowerPoint.PpPlaceholderType.ppPlaceholderSubtitle },
+        { "chart", PowerPoint.PpPlaceholderType.ppPlaceholderChart },
+        { "table", PowerPoint.PpPlaceholderType.ppPlaceholderTable },
+        { "picture", PowerPoint.PpPlaceholderType.ppPlaceholderPicture },
+        { "media", PowerPoint.PpPlaceholderType.ppPlaceholderMediaClip },
+        { "object", PowerPoint.PpPlaceholderType.ppPlaceholderObject } // Add more as needed
+    };
 
             foreach (var element in elements)
             {
+                string placeholderTypeStr = element.Attribute("placeholder")?.Value?.ToLower();
+                if (!string.IsNullOrEmpty(placeholderTypeStr) && placeholderTypeMap.TryGetValue(placeholderTypeStr, out var ppType))
+                {
+                    var targetPlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == ppType);
+                    if (targetPlaceholder == null)
+                    {
+                        // Enhanced fallback to any content-like placeholder
+                        targetPlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderBody || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderObject || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderVerticalBody);
+                        if (targetPlaceholder != null)
+                        {
+                            ErrorHandler.LogInfo($"Fallback placeholder found for {placeholderTypeStr}: {targetPlaceholder.PlaceholderFormat.Type} at {targetPlaceholder.Left},{targetPlaceholder.Top}");
+                        }
+                        else
+                        {
+                            ErrorHandler.LogInfo("No suitable placeholder found for " + placeholderTypeStr + "; falling back to new shape");
+                        }
+                    }
+                    else
+                    {
+                        ErrorHandler.LogInfo($"Found placeholder for {placeholderTypeStr}: {ppType} at {targetPlaceholder.Left},{targetPlaceholder.Top}");
+                    }
+
+                    if (targetPlaceholder != null)
+                    {
+                        ErrorHandler.LogInfo($"Found placeholder: {ppType} at {targetPlaceholder.Left},{targetPlaceholder.Top}");
+                        if (element.Name.LocalName == "textbox" || element.Name.LocalName == "list")
+                        {
+                            var textRange = targetPlaceholder.TextFrame.TextRange;
+                            textRange.Text = ""; // Clear default
+                            ParseContentElements(textRange, element.Elements(), 0);
+                        }
+                        else if (element.Name.LocalName == "chart")
+                        {
+                            AddChart(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
+                            targetPlaceholder.Delete();
+                        }
+                        else if (element.Name.LocalName == "table")
+                        {
+                            AddTable(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
+                            targetPlaceholder.Delete();
+                        }
+                        else if (element.Name.LocalName == "image")
+                        {
+                            // For image, add textual description shape at placeholder position and delete the original placeholder
+                            AddImage(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
+                            targetPlaceholder.Delete();
+                        }
+                        continue;
+                    }
+                }
+
+                // Fallback to adding new shape if no placeholder or mismatch
                 switch (element.Name.LocalName)
                 {
                     case "textbox":
@@ -225,10 +481,18 @@ namespace AIContentTool
 
         private static void AddTable(PowerPoint.Slide slide, XElement tableElement)
         {
+            // Original method: Parses positions from attributes
             float left = float.TryParse(tableElement.Attribute("left")?.Value, out var l) ? l : 100;
             float top = float.TryParse(tableElement.Attribute("top")?.Value, out var t) ? t : 300;
             float width = float.TryParse(tableElement.Attribute("width")?.Value, out var w) ? w : 500;
             float height = float.TryParse(tableElement.Attribute("height")?.Value, out var h) ? h : 200;
+
+            AddTable(slide, tableElement, left, top, width, height); // Call overload with parsed values
+        }
+
+        private static void AddTable(PowerPoint.Slide slide, XElement tableElement, float left, float top, float width, float height)
+        {
+            // Overload for explicit positions (e.g., from placeholder)
             var rows = tableElement.Elements("row").ToList();
             int rowCount = rows.Count;
             int colCount = rows.Any() ? rows[0].Elements("cell").Count() : 0;
@@ -257,11 +521,19 @@ namespace AIContentTool
 
         private static void AddChart(PowerPoint.Slide slide, XElement chartElement)
         {
-            string type = chartElement.Attribute("type")?.Value ?? "bar";
+            // Original method: Parses positions from attributes
             float left = float.TryParse(chartElement.Attribute("left")?.Value, out var l) ? l : 100;
             float top = float.TryParse(chartElement.Attribute("top")?.Value, out var t) ? t : 300;
             float width = float.TryParse(chartElement.Attribute("width")?.Value, out var w) ? w : 500;
             float height = float.TryParse(chartElement.Attribute("height")?.Value, out var h) ? h : 300;
+
+            AddChart(slide, chartElement, left, top, width, height); // Call overload with parsed values
+        }
+
+        private static void AddChart(PowerPoint.Slide slide, XElement chartElement, float left, float top, float width, float height)
+        {
+            // Overload for explicit positions (e.g., from placeholder)
+            string type = chartElement.Attribute("type")?.Value ?? "bar";
 
             Office.XlChartType chartType;
             switch (type.ToLower())
@@ -300,40 +572,66 @@ namespace AIContentTool
                     }
                 }
 
-            var seriesElements = chartElement.Elements("series");
-            if (seriesElements.Any())
-            {
-                int seriesIndex = 1;
-                foreach (var seriesElem in seriesElements)
+                var seriesElements = chartElement.Elements("series");
+                if (seriesElements.Any())
                 {
-                    string color = seriesElem.Attribute("color")?.Value ?? "";
-                    if (!string.IsNullOrEmpty(color))
+                    int seriesIndex = 1;
+                    foreach (var seriesElem in seriesElements)
                     {
-                        var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex);
-                        series.Format.Fill.ForeColor.RGB = ParseColorToOle(color);
+                        string color = seriesElem.Attribute("color")?.Value ?? "";
+                        if (!string.IsNullOrEmpty(color))
+                        {
+                            var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex);
+                            series.Format.Fill.ForeColor.RGB = ParseColorToOle(color);
+                        }
+                        seriesIndex++;
                     }
-                    seriesIndex++;
                 }
-            }
 
-            // Set source data range
-            string lastCol = ((char)('A' + colCount - 1)).ToString();
-            string rangeAddress = $"A1:{lastCol}{rowCount}";
-            chart.SetSourceData($"Sheet1!{rangeAddress}", Excel.XlRowCol.xlRows);
-            chart.Refresh();
-            workbook.Close();
+                // Set source data range
+                string lastCol = ((char)('A' + colCount - 1)).ToString();
+                string rangeAddress = $"A1:{lastCol}{rowCount}";
+                chart.SetSourceData($"Sheet1!{rangeAddress}", Excel.XlRowCol.xlRows);
+                chart.Refresh();
+                workbook.Close();
             }
         }
+
         /// <summary>
         /// Adds an image placeholder to the slide based on the XML element.
         /// </summary>
         private static void AddImage(PowerPoint.Slide slide, XElement imageElement)
         {
-            string placeholder = imageElement.Value;
+            // Original method: Parses positions from attributes
             float left = float.TryParse(imageElement.Attribute("left")?.Value, out var l) ? l : 100;
             float top = float.TryParse(imageElement.Attribute("top")?.Value, out var t) ? t : 400;
             float width = float.TryParse(imageElement.Attribute("width")?.Value, out var w) ? w : 200;
             float height = float.TryParse(imageElement.Attribute("height")?.Value, out var h) ? h : 150;
+
+            AddImage(slide, imageElement, left, top, width, height); // Call overload with parsed values
+        }
+
+        private static void AddImage(PowerPoint.Slide slide, XElement imageElement, float left, float top, float width, float height)
+        {
+            ErrorHandler.LogInfo($"Adding image with dimensions: left={left}, top={top}, width={width}, height={height}");
+            // Overload for explicit positions (e.g., from placeholder)
+            // Log dimensions for debugging
+            ErrorHandler.LogInfo($"Image dimensions before validation: left={left}, top={top}, width={width}, height={height}");
+
+            // Get slide dimensions for max clamping
+            float slideWidth = slide.Parent.PageSetup.SlideWidth;
+            float slideHeight = slide.Parent.PageSetup.SlideHeight;
+
+            // Validate and clamp/fallback dimensions to valid ranges (min 1, positive, max slide size - position; default if 0/invalid)
+            left = float.IsNaN(left) || left < 0 ? 100 : Math.Min(left, slideWidth - 1);
+            top = float.IsNaN(top) || top < 0 ? 400 : Math.Min(top, slideHeight - 1);
+            width = float.IsNaN(width) || width <= 0 ? 200 : Math.Max(1, Math.Min(width, slideWidth - left));
+            height = float.IsNaN(height) || height <= 0 ? 150 : Math.Max(1, Math.Min(height, slideHeight - top));
+
+            // Log after validation
+            ErrorHandler.LogInfo($"Image dimensions after validation: left={left}, top={top}, width={width}, height={height}");
+
+            string placeholder = imageElement.Value;
 
             if (ImportHandlers.PlaceholderFiles.TryGetValue(placeholder, out string filePath) && File.Exists(filePath))
             {
@@ -349,8 +647,9 @@ namespace AIContentTool
                 placeholderShape.TextFrame.TextRange.Font.Color.RGB = ParseColorToOle(color);
                 placeholderShape.TextFrame.TextRange.Font.Size = 12;
             }
-        } /// <summary>
-          /// Parses content elements (paragraphs and lists) into the text range.
+        } 
+        /// <summary>
+         /// Parses content elements (paragraphs and lists) into the text range.
           /// </summary>
         private static void ParseContentElements(PowerPoint.TextRange textRange, IEnumerable<XElement> elements, int indentLevel)
         {
@@ -381,7 +680,7 @@ namespace AIContentTool
                     if (!string.IsNullOrEmpty(plainText))
                     {
                         var plainRun = textRange.InsertAfter(plainText);
-                        ApplyTextFormatting(plainRun, pStyle, pFontSize, pColor); // Apply para-level if no inline
+                        ApplyTextFormatting(plainRun, pStyle, pFontSize, pColor); // Explicit color handling
                         hasContent = true;
                     }
                 }
@@ -448,16 +747,14 @@ namespace AIContentTool
         private static void ApplyTextFormatting(PowerPoint.TextRange textRun, string style, string fontSize, string color = "")
         {
             textRun.Font.Bold = style.Contains("bold") ? Office.MsoTriState.msoTrue : Office.MsoTriState.msoFalse;
-            textRun.Font.Italic = style.Contains("italic") ? Office.MsoTriState.msoTrue : Office.MsoTriState.msoFalse; // New: Italics
+            textRun.Font.Italic = style.Contains("italic") ? Office.MsoTriState.msoTrue : Office.MsoTriState.msoFalse;
             textRun.Font.Underline = style.Contains("underline") ? Office.MsoTriState.msoTrue : Office.MsoTriState.msoFalse;
             if (int.TryParse(fontSize, out int size))
             {
                 textRun.Font.Size = size;
             }
-            if (!string.IsNullOrEmpty(color))
-            {
-                textRun.Font.Color.RGB = ParseColorToOle(color);
-            }
+            // Explicit color set/reset to prevent inheritance
+            textRun.Font.Color.RGB = !string.IsNullOrEmpty(color) ? ParseColorToOle(color) : 0; // Black if no color
         }
         private static int ParseColorToOle(string colorStr)
         {

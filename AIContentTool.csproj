@@ -229,15 +229,17 @@
       <DependentUpon>Ribbon.cs</DependentUpon>
     </Compile>
     <Compile Include="SlideGenerator.cs" />
-    <Compile Include="TemplateSelectionDialog.cs">
+    <None Include="Resources\Archive\TemplateSelectionDialog.cs">
       <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="TemplateSelectionDialog.Designer.cs">
+    </None>
+    <None Include="Resources\Archive\TemplateSelectionDialog.Designer.cs">
       <DependentUpon>TemplateSelectionDialog.cs</DependentUpon>
-    </Compile>
+    </None>
     <Compile Include="ThisAddIn.cs">
       <SubType>Code</SubType>
     </Compile>
+    <EmbeddedResource Include="Resources\Template_Test.potx" />
+    <Content Include="Resources\Prompt.docx" />
     <None Include="ThisAddIn.Designer.xml">
       <DependentUpon>ThisAddIn.cs</DependentUpon>
     </None>
@@ -245,6 +247,9 @@
       <DependentUpon>ThisAddIn.Designer.xml</DependentUpon>
     </Compile>
     <AppDesigner Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Resources\Prompt.txt" />
   </ItemGroup>
   <PropertyGroup>
     <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>

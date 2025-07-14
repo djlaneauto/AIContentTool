@@ -82,15 +82,16 @@ namespace AIContentTool
 
             try
             {
-                // Show template selection dialog
-                using (var dialog = new TemplateSelectionDialog())
-                {
-                    if (dialog.ShowDialog() != DialogResult.OK)
-                    {
-                        // User canceled, abort slide generation
-                        return;
-                    }
-                }
+                // UNcomment this block if you want to prompt for a template selection dialog
+                //// Show template selection dialog
+                //using (var dialog = new TemplateSelectionDialog())
+                //{
+                //    if (dialog.ShowDialog() != DialogResult.OK)
+                //    {
+                //        // User canceled, abort slide generation
+                //        return;
+                //    }
+                //}
 
                 // Get the current presentation
                 PowerPoint.Presentation presentation = ThisAddIn.CurrentPresentation;
