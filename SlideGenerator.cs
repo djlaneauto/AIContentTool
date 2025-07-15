@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -403,7 +404,7 @@ namespace AIContentTool
                     if (targetPlaceholder == null)
                     {
                         // Enhanced fallback to any content-like placeholder
-                        targetPlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderBody || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderObject || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderVerticalBody);
+                        targetPlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderBody || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderObject || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderVerticalBody || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderMixed);
                         if (targetPlaceholder != null)
                         {
                             ErrorHandler.LogInfo($"Fallback placeholder found for {placeholderTypeStr}: {targetPlaceholder.PlaceholderFormat.Type} at {targetPlaceholder.Left},{targetPlaceholder.Top}");
@@ -420,7 +421,6 @@ namespace AIContentTool
 
                     if (targetPlaceholder != null)
                     {
-                        ErrorHandler.LogInfo($"Found placeholder: {ppType} at {targetPlaceholder.Left},{targetPlaceholder.Top}");
                         if (element.Name.LocalName == "textbox" || element.Name.LocalName == "list")
                         {
                             var textRange = targetPlaceholder.TextFrame.TextRange;
@@ -430,18 +430,17 @@ namespace AIContentTool
                         else if (element.Name.LocalName == "chart")
                         {
                             AddChart(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
-                            targetPlaceholder.Delete();
+                            // No delete to avoid "Object does not exist"
                         }
                         else if (element.Name.LocalName == "table")
                         {
                             AddTable(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
-                            targetPlaceholder.Delete();
+                            // No delete
                         }
                         else if (element.Name.LocalName == "image")
                         {
-                            // For image, add textual description shape at placeholder position and delete the original placeholder
                             AddImage(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
-                            targetPlaceholder.Delete();
+                            // No delete
                         }
                         continue;
                     }
@@ -548,7 +547,6 @@ namespace AIContentTool
 
         private static void AddChart(PowerPoint.Slide slide, XElement chartElement, float left, float top, float width, float height)
         {
-            // Overload for explicit positions (e.g., from placeholder)
             string type = chartElement.Attribute("type")?.Value ?? "bar";
 
             Office.XlChartType chartType;
@@ -576,15 +574,36 @@ namespace AIContentTool
                 int colCount = rowCount > 0 ? rows[0].Split(',').Length : 0;
 
                 var workbook = chart.ChartData.Workbook;
+                workbook.Application.Visible = false; // Hide Excel
                 var worksheet = (Excel.Worksheet)workbook.Worksheets[1];
                 worksheet.UsedRange.ClearContents(); // Clear default data
 
-                for (int r = 0; r < rowCount; r++)
+                // For pie, transpose to columns (A labels, B values with header)
+                if (chartType == Office.XlChartType.xlPie)
                 {
-                    var cols = rows[r].Split(',');
-                    for (int c = 0; c < cols.Length; c++)
+                    worksheet.Cells[1, 1] = "Categories";
+                    worksheet.Cells[1, 2] = "Values";
+                    for (int r = 0; r < rowCount; r++)
                     {
-                        worksheet.Cells[r + 1, c + 1] = cols[c].Trim();
+                        var cols = rows[r].Split(',');
+                        if (cols.Length >= 2)
+                        {
+                            worksheet.Cells[r + 2, 1] = cols[0].Trim(); // Label
+                            worksheet.Cells[r + 2, 2] = cols[1].Trim(); // Value
+                        }
+                    }
+                    rowCount += 1; // Include header
+                    colCount = 2;
+                }
+                else
+                {
+                    for (int r = 0; r < rowCount; r++)
+                    {
+                        var cols = rows[r].Split(',');
+                        for (int c = 0; c < cols.Length; c++)
+                        {
+                            worksheet.Cells[r + 1, c + 1] = cols[c].Trim();
+                        }
                     }
                 }
 
@@ -597,19 +616,26 @@ namespace AIContentTool
                         string color = seriesElem.Attribute("color")?.Value ?? "";
                         if (!string.IsNullOrEmpty(color))
                         {
-                            var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex); // Use method call with parentheses
+                            var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex);
                             series.Format.Fill.ForeColor.RGB = ParseColorToOle(color);
                         }
                         seriesIndex++;
                     }
                 }
 
-                // Set source data range
+                // Set source data range directly (no paste)
                 string lastCol = ((char)('A' + colCount - 1)).ToString();
                 string rangeAddress = $"A1:{lastCol}{rowCount}";
                 chart.SetSourceData($"Sheet1!{rangeAddress}", Excel.XlRowCol.xlRows);
                 chart.Refresh();
-                workbook.Close();
+
+                // Cleanup
+                Marshal.FinalReleaseComObject(worksheet);
+                workbook.Close(false);
+                Marshal.FinalReleaseComObject(workbook);
+                Marshal.FinalReleaseComObject(chart.ChartData);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
             }
         }
 
@@ -663,10 +689,11 @@ namespace AIContentTool
                 placeholderShape.TextFrame.TextRange.Font.Color.RGB = ParseColorToOle(color);
                 placeholderShape.TextFrame.TextRange.Font.Size = 12;
             }
-        } 
+        }
+
         /// <summary>
-         /// Parses content elements (paragraphs and lists) into the text range.
-          /// </summary>
+        /// Parses content elements (paragraphs and lists) into the text range.
+        /// </summary>
         private static void ParseContentElements(PowerPoint.TextRange textRange, IEnumerable<XElement> elements, int indentLevel)
         {
             foreach (var element in elements)
@@ -719,6 +746,7 @@ namespace AIContentTool
                 textRange.InsertAfter("\r");
             }
         }
+
         private static void ParseList(PowerPoint.TextRange textRange, XElement listElement, int indentLevel)
         {
             string listType = listElement.Attribute("type")?.Value ?? "bullet";
@@ -760,6 +788,7 @@ namespace AIContentTool
                 }
             }
         }
+
         private static void ApplyTextFormatting(PowerPoint.TextRange textRun, string style, string fontSize, string color = "")
         {
             textRun.Font.Bold = style.Contains("bold") ? Office.MsoTriState.msoTrue : Office.MsoTriState.msoFalse;
@@ -772,6 +801,7 @@ namespace AIContentTool
             // Explicit color set/reset to prevent inheritance
             textRun.Font.Color.RGB = !string.IsNullOrEmpty(color) ? ParseColorToOle(color) : 0; // Black if no color
         }
+
         private static int ParseColorToOle(string colorStr)
         {
             if (string.IsNullOrEmpty(colorStr)) return 0; // Black default
