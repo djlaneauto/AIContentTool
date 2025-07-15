@@ -9,7 +9,14 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using System.Xml;
 using System.Xml.Linq;
+using System.Xml.Schema;
+using DocumentFormat.OpenXml;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Presentation;
+using DCharts = DocumentFormat.OpenXml.Drawing.Charts;
+using DGraphic = DocumentFormat.OpenXml.Drawing;
 using Excel = Microsoft.Office.Interop.Excel;
 using Office = Microsoft.Office.Core;
 using PowerPoint = Microsoft.Office.Interop.PowerPoint;
@@ -25,20 +32,12 @@ namespace AIContentTool
             public int ColorRGB { get; set; }
         }
 
-        /// <summary>
-        /// Generates slides in the specified PowerPoint presentation based on the content and format.
-        /// </summary>
-        /// <param name="presentation">The PowerPoint presentation to add slides to.</param>
-        /// <param name="content">The content string in XML, JSON, or Markdown format.</param>
-        /// <param name="format">The format of the content ("XML", "JSON", or "MARKDOWN").</param>
-        /// <returns>The total number of slides after generation.</returns>
         public static int GenerateSlides(PowerPoint.Presentation presentation, string content, string format)
         {
             try
             {
                 DateTime startTime = DateTime.Now;
 
-                // Prompt for template choice
                 using (var dialog = new TemplateChoiceDialog())
                 {
                     if (dialog.ShowDialog() == DialogResult.OK && dialog.UseCorporate)
@@ -58,7 +57,7 @@ namespace AIContentTool
                             }
                             finally
                             {
-                                try { File.Delete(tempTemplatePath); } catch { } // Cleanup, ignore errors if locked
+                                try { File.Delete(tempTemplatePath); } catch { }
                             }
                         }
                     }
@@ -85,7 +84,7 @@ namespace AIContentTool
             }
             catch (Exception ex)
             {
-                ErrorHandler.LogError($"Slide generation failed", ex); // Pass ex
+                ErrorHandler.LogError($"Slide generation failed", ex);
                 throw;
             }
         }
@@ -95,7 +94,7 @@ namespace AIContentTool
             try
             {
                 var assembly = Assembly.GetExecutingAssembly();
-                string resourceName = "AIContentTool.Resources.Template_Test.potx"; // Double-check this matches exactly
+                string resourceName = "AIContentTool.Resources.Template_Test.potx";
                 ErrorHandler.LogInfo($"Attempting to extract resource: {resourceName}");
                 using (Stream stream = assembly.GetManifestResourceStream(resourceName))
                 {
@@ -104,7 +103,7 @@ namespace AIContentTool
                         ErrorHandler.LogError("Embedded template resource not found");
                         return null;
                     }
-                    string tempPath = Path.Combine(Path.GetTempPath(), "Template_Test.potx");
+                    string tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Template_Test.potx");
                     using (FileStream fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
                     {
                         stream.CopyTo(fileStream);
@@ -183,7 +182,6 @@ namespace AIContentTool
             headersFooters.DateAndTime.Visible = Office.MsoTriState.msoTrue;
             headersFooters.SlideNumber.Visible = Office.MsoTriState.msoTrue;
 
-            // Apply to footer shape
             foreach (PowerPoint.Shape shape in master.Shapes)
             {
                 if (shape.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderFooter)
@@ -196,7 +194,6 @@ namespace AIContentTool
                 }
             }
 
-            // Apply to all layouts and additional masters
             foreach (PowerPoint.CustomLayout layout in master.CustomLayouts)
             {
                 layout.HeadersFooters.Footer.Visible = Office.MsoTriState.msoTrue;
@@ -233,34 +230,127 @@ namespace AIContentTool
             }
         }
 
-        /// <summary>
-        /// Generates slides from XML content.
-        /// </summary>
         private static void GenerateFromXml(PowerPoint.Presentation presentation, string xmlContent)
         {
             try
             {
-                ErrorHandler.LogInfo("Attempting to parse XML: " + xmlContent.Substring(0, Math.Min(200, xmlContent.Length)) + "..."); // Log snippet
-                var xmlDoc = XDocument.Parse(xmlContent);
-                var slides = xmlDoc.Descendants("slide");
-                foreach (var slideElement in slides)
+                ErrorHandler.LogInfo("Attempting to parse XML: " + xmlContent.Substring(0, Math.Min(200, xmlContent.Length)) + "...");
+
+                string schemaString = @"
+                    <xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>
+                        <xs:element name='presentation'>
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:element name='slide' minOccurs='0' maxOccurs='unbounded'>
+                                        <xs:complexType>
+                                            <xs:sequence minOccurs='0' maxOccurs='unbounded'>
+                                                <xs:element name='title' minOccurs='0' maxOccurs='1' type='xs:string'/>
+                                                <xs:element name='textbox' minOccurs='0' maxOccurs='unbounded'>
+                                                    <xs:complexType>
+                                                        <xs:sequence minOccurs='0' maxOccurs='unbounded'>
+                                                            <xs:element name='p' minOccurs='0' maxOccurs='unbounded'/>
+                                                            <xs:element name='list' minOccurs='0' maxOccurs='unbounded'/>
+                                                        </xs:sequence>
+                                                        <xs:attribute name='left' type='xs:float'/>
+                                                        <xs:attribute name='top' type='xs:float'/>
+                                                        <xs:attribute name='width' type='xs:float'/>
+                                                        <xs:attribute name='height' type='xs:float'/>
+                                                        <xs:attribute name='placeholder' type='xs:string'/>
+                                                    </xs:complexType>
+                                                </xs:element>
+                                                <xs:element name='list' minOccurs='0' maxOccurs='unbounded'>
+                                                    <xs:complexType>
+                                                        <xs:sequence minOccurs='0' maxOccurs='unbounded'>
+                                                            <xs:element name='item' minOccurs='0' maxOccurs='unbounded'/>
+                                                        </xs:sequence>
+                                                        <xs:attribute name='type' type='xs:string' use='required'/>
+                                                        <xs:attribute name='left' type='xs:float'/>
+                                                        <xs:attribute name='top' type='xs:float'/>
+                                                        <xs:attribute name='width' type='xs:float'/>
+                                                        <xs:attribute name='height' type='xs:float'/>
+                                                        <xs:attribute name='placeholder' type='xs:string'/>
+                                                    </xs:complexType>
+                                                </xs:element>
+                                                <xs:element name='table' minOccurs='0' maxOccurs='unbounded'>
+                                                    <xs:complexType>
+                                                        <xs:sequence minOccurs='0' maxOccurs='unbounded'>
+                                                            <xs:element name='row' minOccurs='0' maxOccurs='unbounded'/>
+                                                        </xs:sequence>
+                                                        <xs:attribute name='left' type='xs:float'/>
+                                                        <xs:attribute name='top' type='xs:float'/>
+                                                        <xs:attribute name='width' type='xs:float'/>
+                                                        <xs:attribute name='height' type='xs:float'/>
+                                                        <xs:attribute name='placeholder' type='xs:string'/>
+                                                    </xs:complexType>
+                                                </xs:element>
+                                                <xs:element name='chart' minOccurs='0' maxOccurs='unbounded'>
+                                                    <xs:complexType>
+                                                        <xs:sequence minOccurs='0' maxOccurs='unbounded'>
+                                                            <xs:element name='data' minOccurs='0' maxOccurs='1' type='xs:string'/>
+                                                            <xs:element name='series' minOccurs='0' maxOccurs='unbounded'/>
+                                                        </xs:sequence>
+                                                        <xs:attribute name='type' type='xs:string' use='required'/>
+                                                        <xs:attribute name='left' type='xs:float'/>
+                                                        <xs:attribute name='top' type='xs:float'/>
+                                                        <xs:attribute name='width' type='xs:float'/>
+                                                        <xs:attribute name='height' type='xs:float'/>
+                                                        <xs:attribute name='placeholder' type='xs:string'/>
+                                                    </xs:complexType>
+                                                </xs:element>
+                                                <xs:element name='image' minOccurs='0' maxOccurs='unbounded'>
+                                                    <xs:complexType>
+                                                        <xs:simpleContent>
+                                                            <xs:extension base='xs:string'>
+                                                                <xs:attribute name='left' type='xs:float'/>
+                                                                <xs:attribute name='top' type='xs:float'/>
+                                                                <xs:attribute name='width' type='xs:float'/>
+                                                                <xs:attribute name='height' type='xs:float'/>
+                                                                <xs:attribute name='color' type='xs:string'/>
+                                                                <xs:attribute name='placeholder' type='xs:string'/>
+                                                            </xs:extension>
+                                                        </xs:simpleContent>
+                                                    </xs:complexType>
+                                                </xs:element>
+                                            </xs:sequence>
+                                            <xs:attribute name='layout' type='xs:string'/>
+                                        </xs:complexType>
+                                    </xs:element>
+                                </xs:sequence>
+                            </xs:complexType>
+                        </xs:element>
+                    </xs:schema>";
+
+                XmlReaderSettings settings = new XmlReaderSettings();
+                settings.Schemas.Add(null, XmlReader.Create(new StringReader(schemaString)));
+                settings.ValidationType = ValidationType.Schema;
+                settings.ValidationEventHandler += (sender, e) => throw new XmlSchemaValidationException(e.Message);
+
+                using (var stringReader = new StringReader(xmlContent))
+                using (var xmlReader = XmlReader.Create(stringReader, settings))
                 {
-                    string title = slideElement.Element("title")?.Value ?? "Untitled";
-                    var elements = slideElement.Elements().Where(e => e.Name != "title");
-                    AddSlideWithElements(presentation, title, elements, slideElement);
+                    var xmlDoc = XDocument.Load(xmlReader);
+                    var slides = xmlDoc.Descendants("slide");
+                    foreach (var slideElement in slides)
+                    {
+                        string title = slideElement.Element("title")?.Value ?? "Untitled";
+                        var elements = slideElement.Elements().Where(e => e.Name != "title");
+                        AddSlideWithElements(presentation, title, elements, slideElement);
+                    }
                 }
+            }
+            catch (XmlSchemaValidationException valEx)
+            {
+                ErrorHandler.LogError("XML validation failed", valEx);
+                throw new ArgumentException("Invalid XML structure per schema.", valEx);
             }
             catch (Exception ex)
             {
                 ErrorHandler.LogError("XML parsing failed", ex);
-                ErrorHandler.LogInfo("Failed XML content: " + xmlContent); // Log full for review
+                ErrorHandler.LogInfo("Failed XML content: " + xmlContent);
                 throw;
             }
         }
 
-        /// <summary>
-        /// Generates slides from JSON content.
-        /// </summary>
         private static void GenerateFromJson(PowerPoint.Presentation presentation, string jsonContent)
         {
             try
@@ -288,9 +378,7 @@ namespace AIContentTool
                             if (elemDict.ContainsKey("content"))
                             {
                                 elem.Value = elemDict["content"].ToString();
-                                // For complex content like lists/tables, parse recursively if needed
                             }
-                            // TODO: Enhance for nested structures if JSON provides them
                             elements.Add(elem);
                         }
                     }
@@ -304,9 +392,6 @@ namespace AIContentTool
             }
         }
 
-        /// <summary>
-        /// Generates slides from Markdown content (basic support for titles and paragraphs).
-        /// </summary>
         private static void GenerateFromMarkdown(PowerPoint.Presentation presentation, string mdContent)
         {
             var lines = mdContent.Split('\n');
@@ -334,12 +419,8 @@ namespace AIContentTool
             }
         }
 
-        /// <summary>
-        /// Adds a slide with the specified title and elements (textboxes, lists, tables, charts, images).
-        /// </summary>
         private static void AddSlideWithElements(PowerPoint.Presentation presentation, string title, IEnumerable<XElement> elements, XElement slideElement = null)
         {
-            // Lookup custom layout if specified
             PowerPoint.CustomLayout customLayout = null;
             string layoutName = slideElement?.Attribute("layout")?.Value;
             if (!string.IsNullOrEmpty(layoutName))
@@ -361,10 +442,12 @@ namespace AIContentTool
             var slide = presentation.Slides.AddSlide(presentation.Slides.Count + 1, customLayout ?? presentation.SlideMaster.CustomLayouts[1]);
             if (customLayout == null)
             {
-                slide.Layout = PowerPoint.PpSlideLayout.ppLayoutBlank; // Force blank
+                slide.Layout = PowerPoint.PpSlideLayout.ppLayoutBlank;
             }
 
-            // Populate title placeholder
+            float slideWidth = presentation.PageSetup.SlideWidth;
+            float slideHeight = presentation.PageSetup.SlideHeight;
+
             if (!string.IsNullOrEmpty(title))
             {
                 var titlePlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderTitle || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderCenterTitle);
@@ -383,17 +466,16 @@ namespace AIContentTool
                 }
             }
 
-            // Elements mapping with enhanced fallback and logging
             var placeholderTypeMap = new Dictionary<string, PowerPoint.PpPlaceholderType>
-    {
-        { "body", PowerPoint.PpPlaceholderType.ppPlaceholderBody },
-        { "subtitle", PowerPoint.PpPlaceholderType.ppPlaceholderSubtitle },
-        { "chart", PowerPoint.PpPlaceholderType.ppPlaceholderChart },
-        { "table", PowerPoint.PpPlaceholderType.ppPlaceholderTable },
-        { "picture", PowerPoint.PpPlaceholderType.ppPlaceholderPicture },
-        { "media", PowerPoint.PpPlaceholderType.ppPlaceholderMediaClip },
-        { "object", PowerPoint.PpPlaceholderType.ppPlaceholderObject } // Add more as needed
-    };
+            {
+                { "body", PowerPoint.PpPlaceholderType.ppPlaceholderBody },
+                { "subtitle", PowerPoint.PpPlaceholderType.ppPlaceholderSubtitle },
+                { "chart", PowerPoint.PpPlaceholderType.ppPlaceholderChart },
+                { "table", PowerPoint.PpPlaceholderType.ppPlaceholderTable },
+                { "picture", PowerPoint.PpPlaceholderType.ppPlaceholderPicture },
+                { "media", PowerPoint.PpPlaceholderType.ppPlaceholderMediaClip },
+                { "object", PowerPoint.PpPlaceholderType.ppPlaceholderObject }
+            };
 
             foreach (var element in elements)
             {
@@ -403,7 +485,6 @@ namespace AIContentTool
                     var targetPlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == ppType);
                     if (targetPlaceholder == null)
                     {
-                        // Enhanced fallback to any content-like placeholder
                         targetPlaceholder = slide.Shapes.Placeholders.Cast<PowerPoint.Shape>().FirstOrDefault(s => s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderBody || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderObject || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderVerticalBody || s.PlaceholderFormat.Type == PowerPoint.PpPlaceholderType.ppPlaceholderMixed);
                         if (targetPlaceholder != null)
                         {
@@ -421,48 +502,50 @@ namespace AIContentTool
 
                     if (targetPlaceholder != null)
                     {
-                        if (element.Name.LocalName == "textbox" || element.Name.LocalName == "list")
+                        if (element.Name.LocalName == "textbox")
                         {
                             var textRange = targetPlaceholder.TextFrame.TextRange;
-                            textRange.Text = ""; // Clear default
+                            textRange.Text = "";
                             ParseContentElements(textRange, element.Elements(), 0);
+                        }
+                        else if (element.Name.LocalName == "list")
+                        {
+                            var textRange = targetPlaceholder.TextFrame.TextRange;
+                            textRange.Text = "";
+                            ParseList(textRange, element, 0);
                         }
                         else if (element.Name.LocalName == "chart")
                         {
-                            AddChart(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
-                            // No delete to avoid "Object does not exist"
+                            AddChart(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height, slideWidth, slideHeight);
                         }
                         else if (element.Name.LocalName == "table")
                         {
-                            AddTable(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
-                            // No delete
+                            AddTable(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height, slideWidth, slideHeight);
                         }
                         else if (element.Name.LocalName == "image")
                         {
-                            AddImage(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height);
-                            // No delete
+                            AddImage(slide, element, targetPlaceholder.Left, targetPlaceholder.Top, targetPlaceholder.Width, targetPlaceholder.Height, slideWidth, slideHeight);
                         }
                         continue;
                     }
                 }
 
-                // Fallback to adding new shape if no placeholder or mismatch
                 switch (element.Name.LocalName)
                 {
                     case "textbox":
-                        AddTextbox(slide, element);
+                        AddTextbox(slide, element, slideWidth, slideHeight);
                         break;
                     case "list":
-                        AddList(slide, element);
+                        AddList(slide, element, slideWidth, slideHeight);
                         break;
                     case "table":
-                        AddTable(slide, element);
+                        AddTable(slide, element, slideWidth, slideHeight);
                         break;
                     case "chart":
-                        AddChart(slide, element);
+                        AddChart(slide, element, slideWidth, slideHeight);
                         break;
                     case "image":
-                        AddImage(slide, element);
+                        AddImage(slide, element, slideWidth, slideHeight);
                         break;
                     default:
                         break;
@@ -470,44 +553,42 @@ namespace AIContentTool
             }
         }
 
-        private static void AddTextbox(PowerPoint.Slide slide, XElement textboxElement)
+        private static void AddTextbox(PowerPoint.Slide slide, XElement textboxElement, float slideWidth, float slideHeight)
         {
-            float left = float.TryParse(textboxElement.Attribute("left")?.Value, out var l) ? l : 100;
-            float top = float.TryParse(textboxElement.Attribute("top")?.Value, out var t) ? t : 100;
-            float width = float.TryParse(textboxElement.Attribute("width")?.Value, out var w) ? w : 400;
-            float height = float.TryParse(textboxElement.Attribute("height")?.Value, out var h) ? h : 200;
+            float left = ParseAndValidatePosition(textboxElement.Attribute("left")?.Value, 100, 0, slideWidth - 1);
+            float top = ParseAndValidatePosition(textboxElement.Attribute("top")?.Value, 100, 0, slideHeight - 1);
+            float width = ParseAndValidatePosition(textboxElement.Attribute("width")?.Value, 400, 1, slideWidth - left);
+            float height = ParseAndValidatePosition(textboxElement.Attribute("height")?.Value, 200, 1, slideHeight - top);
 
             var shape = slide.Shapes.AddTextbox(Office.MsoTextOrientation.msoTextOrientationHorizontal, left, top, width, height);
             var textRange = shape.TextFrame.TextRange;
             ParseContentElements(textRange, textboxElement.Elements(), 0);
         }
 
-        private static void AddList(PowerPoint.Slide slide, XElement listElement)
+        private static void AddList(PowerPoint.Slide slide, XElement listElement, float slideWidth, float slideHeight)
         {
-            float left = float.TryParse(listElement.Attribute("left")?.Value, out var l) ? l : 100;
-            float top = float.TryParse(listElement.Attribute("top")?.Value, out var t) ? t : 100;
-            float width = float.TryParse(listElement.Attribute("width")?.Value, out var w) ? w : 400;
-            float height = float.TryParse(listElement.Attribute("height")?.Value, out var h) ? h : 200;
+            float left = ParseAndValidatePosition(listElement.Attribute("left")?.Value, 100, 0, slideWidth - 1);
+            float top = ParseAndValidatePosition(listElement.Attribute("top")?.Value, 100, 0, slideHeight - 1);
+            float width = ParseAndValidatePosition(listElement.Attribute("width")?.Value, 400, 1, slideWidth - left);
+            float height = ParseAndValidatePosition(listElement.Attribute("height")?.Value, 200, 1, slideHeight - top);
 
             var shape = slide.Shapes.AddTextbox(Office.MsoTextOrientation.msoTextOrientationHorizontal, left, top, width, height);
             var textRange = shape.TextFrame.TextRange;
             ParseList(textRange, listElement, 0);
         }
 
-        private static void AddTable(PowerPoint.Slide slide, XElement tableElement)
+        private static void AddTable(PowerPoint.Slide slide, XElement tableElement, float slideWidth, float slideHeight)
         {
-            // Original method: Parses positions from attributes
-            float left = float.TryParse(tableElement.Attribute("left")?.Value, out var l) ? l : 100;
-            float top = float.TryParse(tableElement.Attribute("top")?.Value, out var t) ? t : 300;
-            float width = float.TryParse(tableElement.Attribute("width")?.Value, out var w) ? w : 500;
-            float height = float.TryParse(tableElement.Attribute("height")?.Value, out var h) ? h : 200;
+            float left = ParseAndValidatePosition(tableElement.Attribute("left")?.Value, 100, 0, slideWidth - 1);
+            float top = ParseAndValidatePosition(tableElement.Attribute("top")?.Value, 300, 0, slideHeight - 1);
+            float width = ParseAndValidatePosition(tableElement.Attribute("width")?.Value, 500, 1, slideWidth - left);
+            float height = ParseAndValidatePosition(tableElement.Attribute("height")?.Value, 200, 1, slideHeight - top);
 
-            AddTable(slide, tableElement, left, top, width, height); // Call overload with parsed values
+            AddTable(slide, tableElement, left, top, width, height, slideWidth, slideHeight);
         }
 
-        private static void AddTable(PowerPoint.Slide slide, XElement tableElement, float left, float top, float width, float height)
+        private static void AddTable(PowerPoint.Slide slide, XElement tableElement, float left, float top, float width, float height, float slideWidth = 0, float slideHeight = 0)
         {
-            // Overload for explicit positions (e.g., from placeholder)
             var rows = tableElement.Elements("row").ToList();
             int rowCount = rows.Count;
             int colCount = rows.Any() ? rows[0].Elements("cell").Count() : 0;
@@ -534,18 +615,17 @@ namespace AIContentTool
             }
         }
 
-        private static void AddChart(PowerPoint.Slide slide, XElement chartElement)
+        private static void AddChart(PowerPoint.Slide slide, XElement chartElement, float slideWidth, float slideHeight)
         {
-            // Original method: Parses positions from attributes
-            float left = float.TryParse(chartElement.Attribute("left")?.Value, out var l) ? l : 100;
-            float top = float.TryParse(chartElement.Attribute("top")?.Value, out var t) ? t : 300;
-            float width = float.TryParse(chartElement.Attribute("width")?.Value, out var w) ? w : 500;
-            float height = float.TryParse(chartElement.Attribute("height")?.Value, out var h) ? h : 300;
+            float left = ParseAndValidatePosition(chartElement.Attribute("left")?.Value, 100, 0, slideWidth - 1);
+            float top = ParseAndValidatePosition(chartElement.Attribute("top")?.Value, 300, 0, slideHeight - 1);
+            float width = ParseAndValidatePosition(chartElement.Attribute("width")?.Value, 500, 1, slideWidth - left);
+            float height = ParseAndValidatePosition(chartElement.Attribute("height")?.Value, 300, 1, slideHeight - top);
 
-            AddChart(slide, chartElement, left, top, width, height); // Call overload with parsed values
+            AddChart(slide, chartElement, left, top, width, height, slideWidth, slideHeight);
         }
 
-        private static void AddChart(PowerPoint.Slide slide, XElement chartElement, float left, float top, float width, float height)
+        private static void AddChart(PowerPoint.Slide slide, XElement chartElement, float left, float top, float width, float height, float slideWidth = 0, float slideHeight = 0)
         {
             string type = chartElement.Attribute("type")?.Value ?? "bar";
 
@@ -563,137 +643,263 @@ namespace AIContentTool
                     break;
             }
 
-            var chartShape = slide.Shapes.AddChart(chartType, left, top, width, height);
-            var chart = chartShape.Chart;
-
-            var dataElement = chartElement.Element("data");
-            if (dataElement != null)
+            try
             {
-                var rows = dataElement.Value.Split(';');
-                int rowCount = rows.Length;
-                int colCount = rowCount > 0 ? rows[0].Split(',').Length : 0;
+                var chartShape = slide.Shapes.AddChart(chartType, left, top, width, height);
+                var chart = chartShape.Chart;
 
-                var workbook = chart.ChartData.Workbook;
-                workbook.Application.Visible = false; // Hide Excel
-                var worksheet = (Excel.Worksheet)workbook.Worksheets[1];
-                worksheet.UsedRange.ClearContents(); // Clear default data
-
-                // For pie, transpose to columns (A labels, B values with header)
-                if (chartType == Office.XlChartType.xlPie)
+                var dataElement = chartElement.Element("data");
+                if (dataElement != null)
                 {
-                    worksheet.Cells[1, 1] = "Categories";
-                    worksheet.Cells[1, 2] = "Values";
-                    for (int r = 0; r < rowCount; r++)
-                    {
-                        var cols = rows[r].Split(',');
-                        if (cols.Length >= 2)
-                        {
-                            worksheet.Cells[r + 2, 1] = cols[0].Trim(); // Label
-                            worksheet.Cells[r + 2, 2] = cols[1].Trim(); // Value
-                        }
-                    }
-                    rowCount += 1; // Include header
-                    colCount = 2;
-                }
-                else
-                {
-                    for (int r = 0; r < rowCount; r++)
-                    {
-                        var cols = rows[r].Split(',');
-                        for (int c = 0; c < cols.Length; c++)
-                        {
-                            worksheet.Cells[r + 1, c + 1] = cols[c].Trim();
-                        }
-                    }
-                }
+                    var rows = dataElement.Value.Split(';');
+                    int rowCount = rows.Length;
+                    int colCount = rowCount > 0 ? rows[0].Split(',').Length : 0;
 
-                var seriesElements = chartElement.Elements("series");
-                if (seriesElements.Any())
-                {
-                    int seriesIndex = 1;
-                    foreach (var seriesElem in seriesElements)
+                    if (rowCount > 100)
                     {
-                        string color = seriesElem.Attribute("color")?.Value ?? "";
-                        if (!string.IsNullOrEmpty(color))
+                        ErrorHandler.LogInfo($"Large chart data detected ({rowCount} rows); may cause timeouts—consider fallback.");
+                    }
+
+                    Excel.Workbook workbook = null;
+                    Excel.Worksheet worksheet = null;
+                    try
+                    {
+                        workbook = chart.ChartData.Workbook;
+                        workbook.Application.Visible = false;
+                        worksheet = (Excel.Worksheet)workbook.Worksheets[1];
+                        worksheet.UsedRange.ClearContents();
+
+                        if (chartType == Office.XlChartType.xlPie)
                         {
-                            var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex);
-                            series.Format.Fill.ForeColor.RGB = ParseColorToOle(color);
+                            worksheet.Cells[1, 1] = "Categories";
+                            worksheet.Cells[1, 2] = "Values";
+                            for (int r = 0; r < rowCount; r++)
+                            {
+                                var cols = rows[r].Split(',');
+                                if (cols.Length >= 2)
+                                {
+                                    worksheet.Cells[r + 2, 1] = cols[0].Trim();
+                                    worksheet.Cells[r + 2, 2] = cols[1].Trim();
+                                }
+                            }
+                            rowCount += 1;
+                            colCount = 2;
                         }
-                        seriesIndex++;
+                        else
+                        {
+                            for (int r = 0; r < rowCount; r++)
+                            {
+                                var cols = rows[r].Split(',');
+                                for (int c = 0; c < cols.Length; c++)
+                                {
+                                    worksheet.Cells[r + 1, c + 1] = cols[c].Trim();
+                                }
+                            }
+                        }
+
+                        var seriesElements = chartElement.Elements("series");
+                        if (seriesElements.Any())
+                        {
+                            int seriesIndex = 1;
+                            foreach (var seriesElem in seriesElements)
+                            {
+                                string color = seriesElem.Attribute("color")?.Value ?? "";
+                                if (!string.IsNullOrEmpty(color))
+                                {
+                                    var series = (PowerPoint.Series)chart.SeriesCollection(seriesIndex);
+                                    series.Format.Fill.ForeColor.RGB = ParseColorToOle(color);
+                                }
+                                seriesIndex++;
+                            }
+                        }
+
+                        string lastCol = ((char)('A' + colCount - 1)).ToString();
+                        string rangeAddress = $"A1:{lastCol}{rowCount}";
+                        Excel.XlRowCol rowCol = (chartType == Office.XlChartType.xlPie) ? Excel.XlRowCol.xlColumns : Excel.XlRowCol.xlRows;
+                        chart.SetSourceData($"Sheet1!{rangeAddress}", rowCol);
+                        chart.Refresh();
+                    }
+                    finally
+                    {
+                        if (worksheet != null) Marshal.FinalReleaseComObject(worksheet);
+                        if (workbook != null)
+                        {
+                            workbook.Close(false);
+                            Marshal.FinalReleaseComObject(workbook);
+                        }
+                        if (chart.ChartData != null) Marshal.FinalReleaseComObject(chart.ChartData);
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
                     }
                 }
-
-                // Set source data range directly (no paste)
-                string lastCol = ((char)('A' + colCount - 1)).ToString();
-                string rangeAddress = $"A1:{lastCol}{rowCount}";
-                chart.SetSourceData($"Sheet1!{rangeAddress}", Excel.XlRowCol.xlRows);
-                chart.Refresh();
-
-                // Cleanup
-                Marshal.FinalReleaseComObject(worksheet);
-                workbook.Close(false);
-                Marshal.FinalReleaseComObject(workbook);
-                Marshal.FinalReleaseComObject(chart.ChartData);
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError($"Interop chart creation failed: {ex.Message}; falling back to OpenXML.");
+                AddChartWithOpenXml(slide.Parent, slide, chartElement, left, top, width, height, chartType);
             }
         }
 
-        /// <summary>
-        /// Adds an image placeholder to the slide based on the XML element.
-        /// </summary>
-        private static void AddImage(PowerPoint.Slide slide, XElement imageElement)
+        private static void AddChartWithOpenXml(PowerPoint.Presentation presentation, PowerPoint.Slide slide, XElement chartElement, float left, float top, float width, float height, Office.XlChartType chartType)
         {
-            // Original method: Parses positions from attributes
-            float left = float.TryParse(imageElement.Attribute("left")?.Value, out var l) ? l : 100;
-            float top = float.TryParse(imageElement.Attribute("top")?.Value, out var t) ? t : 400;
-            float width = float.TryParse(imageElement.Attribute("width")?.Value, out var w) ? w : 200;
-            float height = float.TryParse(imageElement.Attribute("height")?.Value, out var h) ? h : 150;
-
-            AddImage(slide, imageElement, left, top, width, height); // Call overload with parsed values
-        }
-
-        private static void AddImage(PowerPoint.Slide slide, XElement imageElement, float left, float top, float width, float height)
-        {
-            ErrorHandler.LogInfo($"Adding image with dimensions: left={left}, top={top}, width={width}, height={height}");
-            // Overload for explicit positions (e.g., from placeholder)
-            // Log dimensions for debugging
-            ErrorHandler.LogInfo($"Image dimensions before validation: left={left}, top={top}, width={width}, height={height}");
-
-            // Get slide dimensions for max clamping
-            float slideWidth = slide.Parent.PageSetup.SlideWidth;
-            float slideHeight = slide.Parent.PageSetup.SlideHeight;
-
-            // Validate and clamp/fallback dimensions to valid ranges (min 1, positive, max slide size - position; default if 0/invalid)
-            left = float.IsNaN(left) || left < 0 ? 100 : Math.Min(left, slideWidth - 1);
-            top = float.IsNaN(top) || top < 0 ? 400 : Math.Min(top, slideHeight - 1);
-            width = float.IsNaN(width) || width <= 0 ? 200 : Math.Max(1, Math.Min(width, slideWidth - left));
-            height = float.IsNaN(height) || height <= 0 ? 150 : Math.Max(1, Math.Min(height, slideHeight - top));
-
-            // Log after validation
-            ErrorHandler.LogInfo($"Image dimensions after validation: left={left}, top={top}, width={width}, height={height}");
-
-            string placeholder = imageElement.Value;
-
-            if (ImportHandlers.PlaceholderFiles.TryGetValue(placeholder, out string filePath) && File.Exists(filePath))
+            try
             {
-                slide.Shapes.AddPicture(filePath, Office.MsoTriState.msoFalse, Office.MsoTriState.msoTrue, left, top, width, height);
+                string tempPptx = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "temp.pptx");
+                presentation.SaveAs(tempPptx);
+
+                using (PresentationDocument doc = PresentationDocument.Open(tempPptx, true))
+                {
+                    SlidePart slidePart = doc.PresentationPart.SlideParts.LastOrDefault();
+                    if (slidePart == null) return;
+
+                    ChartPart chartPart = slidePart.AddNewPart<ChartPart>();
+                    chartPart.ChartSpace = new DCharts.ChartSpace();
+
+                    DCharts.Chart chart = new DCharts.Chart();
+                    switch (chartType)
+                    {
+                        case Office.XlChartType.xlLine:
+                            chart.Append(new DCharts.LineChart());
+                            break;
+                        case Office.XlChartType.xlPie:
+                            chart.Append(new DCharts.PieChart());
+                            break;
+                        default:
+                            chart.Append(new DCharts.BarChart());
+                            break;
+                    }
+
+                    var dataElement = chartElement.Element("data");
+                    if (dataElement != null)
+                    {
+                        var rows = dataElement.Value.Split(';');
+                        for (int seriesIndex = 0; seriesIndex < rows.Length; seriesIndex++)
+                        {
+                            var series = new DCharts.BarChartSeries();
+                            var values = rows[seriesIndex].Split(',');
+                            for (int valIndex = 0; valIndex < values.Length; valIndex++)
+                            {
+                                series.Append(new DCharts.NumericValue(values[valIndex].Trim()));
+                            }
+                            chart.FirstOrDefault()?.Append(series);
+                        }
+                    }
+
+                    chartPart.ChartSpace.Append(chart);
+                    chartPart.ChartSpace.Save();
+
+                    GraphicFrame gf = new GraphicFrame();
+                    gf.Graphic = new DGraphic.Graphic();
+                    gf.Graphic.GraphicData = new DGraphic.GraphicData { Uri = "http://schemas.openxmlformats.org/drawingml/2006/chart" };
+                    gf.Graphic.GraphicData.Append(new DCharts.ChartReference() { Id = slidePart.GetIdOfPart(chartPart) });
+
+                    slidePart.Slide.CommonSlideData.ShapeTree.Append(gf);
+                    slidePart.Slide.Save();
+                }
+
+                presentation.Close();
+                presentation = Globals.ThisAddIn.Application.Presentations.Open(tempPptx);
+                System.IO.File.Delete(tempPptx);
             }
-            else
+            catch (Exception ex)
             {
+                ErrorHandler.LogError($"OpenXML chart fallback failed: {ex.Message}");
                 var placeholderShape = slide.Shapes.AddShape(Office.MsoAutoShapeType.msoShapeRectangle, left, top, width, height);
+                placeholderShape.TextFrame.TextRange.Text = "Chart Placeholder (Generation Failed)";
                 placeholderShape.Fill.Visible = Office.MsoTriState.msoFalse;
                 placeholderShape.Line.Visible = Office.MsoTriState.msoTrue;
-                placeholderShape.TextFrame.TextRange.Text = $"Placeholder: {placeholder}";
-                string color = imageElement.Attribute("color")?.Value ?? "red"; // Default red, override via attr
-                placeholderShape.TextFrame.TextRange.Font.Color.RGB = ParseColorToOle(color);
-                placeholderShape.TextFrame.TextRange.Font.Size = 12;
             }
         }
 
-        /// <summary>
-        /// Parses content elements (paragraphs and lists) into the text range.
-        /// </summary>
+        private static void AddImage(PowerPoint.Slide slide, XElement imageElement, float slideWidth, float slideHeight)
+        {
+            float left = ParseAndValidatePosition(imageElement.Attribute("left")?.Value, 100, 0, slideWidth - 1);
+            float top = ParseAndValidatePosition(imageElement.Attribute("top")?.Value, 400, 0, slideHeight - 1);
+            float width = ParseAndValidatePosition(imageElement.Attribute("width")?.Value, 200, 1, slideWidth - left);
+            float height = ParseAndValidatePosition(imageElement.Attribute("height")?.Value, 150, 1, slideHeight - top);
+
+            AddImage(slide, imageElement, left, top, width, height, slideWidth, slideHeight);
+        }
+
+        private static void AddImage(PowerPoint.Slide slide, XElement imageElement, float left, float top, float width, float height, float slideWidth = 0, float slideHeight = 0)
+        {
+            ErrorHandler.LogInfo($"Adding image with dimensions: left={left}, top={top}, width={width}, height={height}");
+            string description = imageElement.Value;
+
+            PowerPoint.Shape imageShape = null;
+            if (ImportHandlers.PlaceholderFiles.TryGetValue(description, out string filePath) && File.Exists(filePath))
+            {
+                try
+                {
+                    imageShape = slide.Shapes.AddPicture(filePath, Office.MsoTriState.msoFalse, Office.MsoTriState.msoTrue, left, top, width, height);
+                    imageShape.LockAspectRatio = Office.MsoTriState.msoTrue;
+                    if (imageShape.Width > width || imageShape.Height > height)
+                    {
+                        imageShape.ScaleWidth(1, Office.MsoTriState.msoTrue);
+                        imageShape.ScaleHeight(1, Office.MsoTriState.msoTrue);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ErrorHandler.LogError($"Failed to add image from {filePath}: {ex.Message}");
+                    imageShape = null;
+                }
+            }
+
+            if (imageShape == null)
+            {
+                imageShape = slide.Shapes.AddShape(Office.MsoAutoShapeType.msoShapeRectangle, left, top, width, height);
+                imageShape.Fill.Visible = Office.MsoTriState.msoFalse;
+                imageShape.Line.Visible = Office.MsoTriState.msoTrue;
+                string color = imageElement.Attribute("color")?.Value ?? "red";
+                imageShape.Line.ForeColor.RGB = ParseColorToOle(color);
+            }
+
+            if (!string.IsNullOrEmpty(description))
+            {
+                float textLeft = left + (width / 4);
+                float textTop = top + (height / 2) - 20;
+                float textWidth = width / 2;
+                float textHeight = 40;
+                var textShape = slide.Shapes.AddTextbox(Office.MsoTextOrientation.msoTextOrientationHorizontal, textLeft, textTop, textWidth, textHeight);
+                textShape.TextFrame.TextRange.Text = $"Add {description}";
+                textShape.TextFrame.TextRange.Font.Size = 12;
+                textShape.TextFrame.TextRange.Font.Color.RGB = ParseColorToOle("black");
+                textShape.TextFrame.WordWrap = Office.MsoTriState.msoTrue;
+                textShape.TextFrame.AutoSize = PowerPoint.PpAutoSize.ppAutoSizeShapeToFitText;
+                textShape.Fill.Visible = Office.MsoTriState.msoFalse;
+                textShape.Line.Visible = Office.MsoTriState.msoFalse;
+            }
+
+            var captionElement = imageElement.Element("caption");
+            if (captionElement != null)
+            {
+                try
+                {
+                    string captionText = captionElement.Value;
+                    if (!string.IsNullOrEmpty(captionText))
+                    {
+                        float captionLeft = 50;
+                        float captionTop = top;
+                        float captionWidth = left - 60;
+                        float captionHeight = height;
+                        var captionShape = slide.Shapes.AddTextbox(Office.MsoTextOrientation.msoTextOrientationHorizontal, captionLeft, captionTop, captionWidth, captionHeight);
+                        captionShape.TextFrame.TextRange.Text = captionText;
+                        captionShape.TextFrame.TextRange.Font.Size = 14;
+                        captionShape.TextFrame.TextRange.Font.Bold = Office.MsoTriState.msoTrue;
+                        captionShape.TextFrame.WordWrap = Office.MsoTriState.msoTrue;
+                        captionShape.TextFrame.AutoSize = PowerPoint.PpAutoSize.ppAutoSizeShapeToFitText;
+                        captionShape.Fill.Visible = Office.MsoTriState.msoFalse;
+                        captionShape.Line.Visible = Office.MsoTriState.msoFalse;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ErrorHandler.LogError($"Failed to add caption: {ex.Message}");
+                }
+            }
+        }
+
         private static void ParseContentElements(PowerPoint.TextRange textRange, IEnumerable<XElement> elements, int indentLevel)
         {
             foreach (var element in elements)
@@ -723,7 +929,7 @@ namespace AIContentTool
                     if (!string.IsNullOrEmpty(plainText))
                     {
                         var plainRun = textRange.InsertAfter(plainText);
-                        ApplyTextFormatting(plainRun, pStyle, pFontSize, pColor); // Explicit color handling
+                        ApplyTextFormatting(plainRun, pStyle, pFontSize, pColor);
                         hasContent = true;
                     }
                 }
@@ -752,36 +958,30 @@ namespace AIContentTool
             string listType = listElement.Attribute("type")?.Value ?? "bullet";
             foreach (var itemElement in listElement.Elements("item"))
             {
-                // Add item text if present (from value or <p>)
                 if (itemElement.HasElements)
                 {
                     foreach (var p in itemElement.Elements("p"))
                     {
-                        ParseParagraph(textRange, p); // Adds text and \r; ParseParagraph handles formatting
-                                                      // Note: If multiple <p>, it adds multiple paras per item; if you want single, we can adjust
+                        ParseParagraph(textRange, p);
                     }
                 }
                 else if (!string.IsNullOrEmpty(itemElement.Value))
                 {
                     var itemRun = textRange.InsertAfter(itemElement.Value);
-                    // Apply formatting for plain value (from item attributes)
                     string style = itemElement.Attribute("style")?.Value ?? "";
                     string color = itemElement.Attribute("color")?.Value ?? "";
                     string fontSize = itemElement.Attribute("font-size")?.Value ?? "";
                     ApplyTextFormatting(itemRun, style, fontSize, color);
                 }
 
-                // Always add paragraph break for this item
                 textRange.InsertAfter("\r");
 
-                // Set formatting on the new paragraph
                 var itemPara = textRange.Paragraphs(textRange.Paragraphs().Count, 1);
                 itemPara.ParagraphFormat.Bullet.Visible = Office.MsoTriState.msoTrue;
                 itemPara.ParagraphFormat.Bullet.Type = listType == "bullet" ?
                     PowerPoint.PpBulletType.ppBulletUnnumbered : PowerPoint.PpBulletType.ppBulletNumbered;
                 itemPara.IndentLevel = indentLevel + 1;
 
-                // Handle nested content (e.g., sub-lists)
                 if (itemElement.HasElements)
                 {
                     ParseContentElements(textRange, itemElement.Elements("list"), indentLevel + 1);
@@ -798,13 +998,12 @@ namespace AIContentTool
             {
                 textRun.Font.Size = size;
             }
-            // Explicit color set/reset to prevent inheritance
-            textRun.Font.Color.RGB = !string.IsNullOrEmpty(color) ? ParseColorToOle(color) : 0; // Black if no color
+            textRun.Font.Color.RGB = !string.IsNullOrEmpty(color) ? ParseColorToOle(color) : 0;
         }
 
         private static int ParseColorToOle(string colorStr)
         {
-            if (string.IsNullOrEmpty(colorStr)) return 0; // Black default
+            if (string.IsNullOrEmpty(colorStr)) return 0;
             try
             {
                 Color color;
@@ -820,8 +1019,23 @@ namespace AIContentTool
             }
             catch
             {
-                return 0; // Fallback black
+                return 0;
             }
+        }
+
+        private static float ParseAndValidatePosition(string value, float defaultValue, float minValue, float maxValue)
+        {
+            if (!float.TryParse(value, out float parsed) || float.IsNaN(parsed) || float.IsInfinity(parsed))
+            {
+                ErrorHandler.LogInfo($"Invalid position '{value}'; using default {defaultValue}");
+                parsed = defaultValue;
+            }
+            float clamped = Math.Max(minValue, Math.Min(parsed, maxValue));
+            if (clamped != parsed)
+            {
+                ErrorHandler.LogInfo($"Clamped position from {parsed} to {clamped} (bounds: {minValue}-{maxValue})");
+            }
+            return clamped;
         }
     }
 }
